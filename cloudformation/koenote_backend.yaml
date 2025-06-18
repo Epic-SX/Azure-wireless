@@ -1,0 +1,562 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  rePr-wireless Backend SAM Template
+
+Parameters:
+  PublicSubnetAZ:
+    Type: String
+    Default: ap-northeast-1a
+    Description: "Public Subnet AZ (例: ap-northeast-1a)"
+  PrivateSubnetAZ:
+    Type: String
+    Default: ap-northeast-1c
+    Description: "Private Subnet AZ (例: ap-northeast-1c)"
+  OpenAIApiKey:
+    Type: String
+    Description: "OpenAI API Key"
+
+Resources:
+  # ---------------------------------------
+  # 1) API Gateway
+  # ---------------------------------------
+  rePrWirelessApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+
+  # ---------------------------------------
+  # 2) DynamoDB Table
+  # ---------------------------------------
+  rePrWirelessRecordingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: repr-wirelessrecordings
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # ---------------------------------------
+  # 3) S3 Bucket (音声ファイル保存先)
+  # ---------------------------------------
+  rePrWirelessAudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "repr-wireless-audio-${AWS::Region}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - HEAD
+              - DELETE
+            AllowedOrigins:
+              - "*"
+            AllowedHeaders:
+              - "*"
+            ExposedHeaders:
+              - ETag
+              - x-amz-server-side-encryption
+              - x-amz-request-id
+              - x-amz-id-2
+              - Content-Type
+              - Content-Length
+              - Access-Control-Allow-Origin
+              - Access-Control-Allow-Methods
+              - Access-Control-Allow-Headers
+            MaxAge: 3600
+
+  # BucketPolicy: バケットをパブリック公開するポリシー
+  rePrWirelessAudioBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rePrWirelessAudioBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+            Resource: !Sub "${rePrWirelessAudioBucket.Arn}/*"
+          - Sid: AllowCORSAccess
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:PutObject
+              - s3:PutObjectAcl
+            Resource: !Sub "${rePrWirelessAudioBucket.Arn}/*"
+
+  # ---------------------------------------
+  # 4) Lambda Function
+  # ---------------------------------------
+  rePrWirelessLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - 'arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess'
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                Resource: !GetAtt rePrWirelessRecordingsTable.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub "${rePrWirelessAudioBucket.Arn}"
+                  - !Sub "${rePrWirelessAudioBucket.Arn}/*"
+        - PolicyName: StepFunctionsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                  - 'states:DescribeExecution'
+                Resource: '*'
+
+  # Main Lambda function for API
+  KoenotoLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: repr-wireless-koenoto
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      CodeUri: ../backend/lambda
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref rePrWirelessRecordingsTable
+          AUDIO_BUCKET_NAME: !Ref rePrWirelessAudioBucket
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+          STEP_FUNCTION_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rePr-wireless-audio-processing"
+      MemorySize: 1024
+      Timeout: 300
+      Role: !GetAtt rePrWirelessLambdaFunctionRole.Arn
+      Events:
+        GetRecordings:
+          Type: Api
+          Properties:
+            Path: /koenoto
+            Method: GET
+            RestApiId: !Ref rePrWirelessApi
+        GetRecording:
+          Type: Api
+          Properties:
+            Path: /koenoto/{id}
+            Method: GET
+            RestApiId: !Ref rePrWirelessApi
+        DeleteRecording:
+          Type: Api
+          Properties:
+            Path: /koenoto/{id}
+            Method: DELETE
+            RestApiId: !Ref rePrWirelessApi
+        CreatePresignedUrl:
+          Type: Api
+          Properties:
+            Path: /koenoto/presigned-url
+            Method: POST
+            RestApiId: !Ref rePrWirelessApi
+        ProcessAudio:
+          Type: Api
+          Properties:
+            Path: /koenoto/process-audio
+            Method: POST
+            RestApiId: !Ref rePrWirelessApi
+        ProcessStatus:
+          Type: Api
+          Properties:
+            Path: /koenoto/process-status
+            Method: GET
+            RestApiId: !Ref rePrWirelessApi
+        SaveRecording:
+          Type: Api
+          Properties:
+            Path: /koenoto/save-recording
+            Method: POST
+            RestApiId: !Ref rePrWirelessApi
+        UploadAudio:
+          Type: Api
+          Properties:
+            Path: /koenoto/upload-audio
+            Method: POST
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethod:
+          Type: Api
+          Properties:
+            Path: /koenoto
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodPresignedUrl:
+          Type: Api
+          Properties:
+            Path: /koenoto/presigned-url
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodProcessAudio:
+          Type: Api
+          Properties:
+            Path: /koenoto/process-audio
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodProcessStatus:
+          Type: Api
+          Properties:
+            Path: /koenoto/process-status
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodSaveRecording:
+          Type: Api
+          Properties:
+            Path: /koenoto/save-recording
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodUploadAudio:
+          Type: Api
+          Properties:
+            Path: /koenoto/upload-audio
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+        OptionsMethodId:
+          Type: Api
+          Properties:
+            Path: /koenoto/{id}
+            Method: OPTIONS
+            RestApiId: !Ref rePrWirelessApi
+
+  # ---------------------------------------
+  # 5) Step Function
+  # ---------------------------------------
+  rePrWirelessStepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaRole'
+      Policies:
+        - PolicyName: StepFunctionExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource: !GetAtt KoenotoLambdaFunction.Arn
+
+  rePrWirelessStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: rePr-wireless-audio-processing
+      RoleArn: !GetAtt rePrWirelessStepFunctionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Audio Processing State Machine",
+          "StartAt": "InitializeSession",
+          "States": {
+            "InitializeSession": {
+              "Type": "Pass",
+              "Parameters": {
+                "sessionId.$": "$$.Execution.Id"
+              },
+              "ResultPath": "$.sessionData",
+              "Next": "ProcessChunksInParallel"
+            },
+            "ProcessChunksInParallel": {
+              "Type": "Map",
+              "ItemsPath": "$.audioKeys",
+              "Parameters": {
+                "chunkKey.$": "$$.Map.Item.Value",
+                "bucket.$": "$.audioBucket",
+                "sessionId.$": "$.sessionData.sessionId",
+                "chunkIndex.$": "$$.Map.Item.Index",
+                "userId.$": "$.userId"
+              },
+              "MaxConcurrency": 5,
+              "Iterator": {
+                "StartAt": "ProcessSingleChunk",
+                "States": {
+                  "ProcessSingleChunk": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${KoenotoLambdaFunction.Arn}",
+                      "Payload": {
+                        "chunkKey.$": "$.chunkKey",
+                        "bucket.$": "$.bucket",
+                        "sessionId.$": "$.sessionId",
+                        "chunkIndex.$": "$.chunkIndex",
+                        "userId.$": "$.userId"
+                      }
+                    },
+                    "ResultSelector": {
+                      "result.$": "$.Payload.result"
+                    },
+                    "ResultPath": "$.result",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "IntervalSeconds": 3,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "ResultPath": "$.result",
+                        "Next": "HandleChunkError"
+                      }
+                    ],
+                    "End": true
+                  },
+                  "HandleChunkError": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "result": {
+                        "chunk.$": "$.chunkKey",
+                        "text": "[Processing failed in Step Functions]",
+                        "error.$": "$.Error",
+                        "cause.$": "$.Cause",
+                        "session_id.$": "$.sessionId",
+                        "chunk_index.$": "$.chunkIndex"
+                      }
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "ResultPath": "$.processedChunks",
+              "Next": "CombineResults",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "HandleMapError"
+                }
+              ]
+            },
+            "HandleMapError": {
+              "Type": "Pass",
+              "Parameters": {
+                "error.$": "$.error",
+                "message": "Error in parallel processing of chunks",
+                "audioKeys.$": "$.audioKeys",
+                "userId.$": "$.userId",
+                "completeAudioUrl.$": "$.completeAudioUrl",
+                "sessionId.$": "$.sessionData.sessionId"
+              },
+              "Next": "FallbackCombineResults"
+            },
+            "FallbackCombineResults": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${KoenotoLambdaFunction.Arn}",
+                "Payload": {
+                  "httpMethod": "POST",
+                  "resource": "/koenoto/combine-results",
+                  "body": {
+                    "transcriptionResults": [
+                      {
+                        "chunk": "error",
+                        "text": "An error occurred during processing. Please try again.",
+                        "error.$": "$.error.Error",
+                        "cause.$": "$.error.Cause"
+                      }
+                    ],
+                    "completeAudioUrl.$": "$.completeAudioUrl",
+                    "userId.$": "$.userId",
+                    "sessionId.$": "$.sessionData.sessionId"
+                  }
+                }
+              },
+              "ResultSelector": {
+                "result.$": "$.Payload.body"
+              },
+              "End": true
+            },
+            "CombineResults": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${KoenotoLambdaFunction.Arn}",
+                "Payload": {
+                  "httpMethod": "POST",
+                  "resource": "/koenoto/combine-results",
+                  "body": {
+                    "transcriptionResults.$": "$.processedChunks[*].result.result",
+                    "completeAudioUrl.$": "$.completeAudioUrl",
+                    "userId.$": "$.userId",
+                    "sessionId.$": "$.sessionData.sessionId",
+                    "saveToDb": false
+                  }
+                }
+              },
+              "ResultSelector": {
+                "result.$": "$.Payload.body"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 3,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.combineError",
+                  "Next": "HandleCombineError"
+                }
+              ],
+              "End": true
+            },
+            "HandleCombineError": {
+              "Type": "Pass",
+              "Parameters": {
+                "error.$": "$.combineError",
+                "message": "Error combining results",
+                "processedChunks.$": "$.processedChunks",
+                "userId.$": "$.userId",
+                "completeAudioUrl.$": "$.completeAudioUrl",
+                "sessionId.$": "$.sessionData.sessionId"
+              },
+              "End": true
+            }
+          }
+        }
+
+  # API Gateway configuration for binary media types
+  rePrWirelessApiGatewaySettings:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref rePrWirelessApi
+      BinaryMediaTypes:
+        - 'audio/webm'
+        - 'audio/wav'
+        - 'audio/*'
+      MinimumCompressionSize: 0
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # Simple test Lambda function
+  TestLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: repr-wireless-test
+      Runtime: python3.11
+      Handler: index.handler
+      InlineCode: |
+        import json
+        
+        def handler(event, context):
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+                    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
+                },
+                'body': json.dumps('Hello from Lambda!')
+            }
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt rePrWirelessLambdaFunctionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /test
+            Method: GET
+            RestApiId: !Ref rePrWirelessApi
+
+Outputs:
+  PublicApiEndpoint:
+    Description: "Public HTTP endpoint for rePr-wireless API"
+    Value: !Sub "https://${rePrWirelessApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicApiEndpoint"
+  
+  TestLambdaFunctionArn:
+    Description: "ARN of the test Lambda Function"
+    Value: !GetAtt TestLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-TestLambdaFunctionArn"
+  
+  KoenotoLambdaFunctionArn:
+    Description: "ARN of the Koenoto Lambda Function"
+    Value: !GetAtt KoenotoLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KoenotoLambdaFunctionArn"
+
+  rePrWirelessStepFunctionArn:
+    Description: "ARN of the rePr Wireless Step Function"
+    Value: !Ref rePrWirelessStepFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-StepFunctionArn"

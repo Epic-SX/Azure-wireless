@@ -1,0 +1,14 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Simple Test Template
+
+Resources:
+  TestBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "test-bucket-${AWS::Region}-${AWS::AccountId}"
+
+Outputs:
+  BucketName:
+    Description: "S3 bucket name"
+    Value: !Ref TestBucket 
