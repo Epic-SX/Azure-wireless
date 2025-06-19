@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
   const API_URL = process.env.NEXT_PUBLIC_rePr_wireless_API_URL || '';
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
   
   // Get the user_id from query parameters
   const searchParams = request.nextUrl.searchParams;
@@ -13,7 +12,6 @@ export async function GET(request: NextRequest) {
     const response = await fetch(`${API_URL}/koenoto?user_id=${userId}`, {
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
       },
     });
     
@@ -72,7 +70,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const API_URL = process.env.NEXT_PUBLIC_rePr_wireless_API_URL || '';
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
   
   try {
     const requestBody = await request.json();
@@ -82,7 +79,6 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
       },
       body: JSON.stringify(requestBody),
     });

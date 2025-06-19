@@ -2,14 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
   const API_URL = process.env.NEXT_PUBLIC_rePr_wireless_API_URL || '';
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
   
   try {
     // Forward the request to the actual API
     const response = await fetch(`${API_URL}/koenote/recordings`, {
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
       },
     });
     

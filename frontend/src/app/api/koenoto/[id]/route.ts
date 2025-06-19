@@ -6,14 +6,12 @@ export async function GET(
 ) {
   const recordingId = params.id;
   const API_URL = process.env.NEXT_PUBLIC_rePr_wireless_API_URL || '';
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
   
   try {
     // Forward the request to the actual API
     const response = await fetch(`${API_URL}/koenoto/${recordingId}`, {
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
       },
     });
     
@@ -62,7 +60,6 @@ export async function DELETE(
 ) {
   const recordingId = params.id;
   const API_URL = process.env.NEXT_PUBLIC_rePr_wireless_API_URL || '';
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
   
   try {
     // Forward the delete request to the actual API
@@ -70,7 +67,6 @@ export async function DELETE(
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
       },
     });
     

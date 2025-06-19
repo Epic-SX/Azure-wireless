@@ -30,6 +30,8 @@ Resources:
         AllowOrigin: "'*'"
       EndpointConfiguration: REGIONAL
       TracingEnabled: true
+      Auth:
+        ApiKeyRequired: false
       GatewayResponses:
         DEFAULT_4XX:
           ResponseParameters:
